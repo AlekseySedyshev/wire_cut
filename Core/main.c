@@ -1,4 +1,4 @@
-// Wire cutter project 
+// Wire cutter project
 // Copyright (c) 2022, Aleksey Sedyshev
 // https://github.com/AlekseySedyshev
 //
@@ -8,13 +8,14 @@
 #include "LCD_M15SGF.h" // 101 x 80
 #include <stdbool.h>
 
-#define FILTR_TIME 50u
+#define FILTR_TIME 2u
+#define SPEED_TIME 2000u
 #define BACK_CONST 30u
-#define KNIFE_OPEN 20U
-#define KNIFE_CLOSE 40U
+#define KNIFE_OPEN 36  // 20U
+#define KNIFE_CLOSE 70 // 40U
 #define KNIFE_TIME 500u
 
-#define SCREEN_UPDATE 100u
+#define SCREEN_UPDATE 50u
 #define FLASH_PAGE16 0x8003C00u
 
 #define FLASH_FKEY1 0x45670123u
@@ -90,6 +91,7 @@ void SysTick_Handler(void)
 		{
 			if (idle_time < 2000)
 				idle_time++;
+			press_time = 0;
 		}
 
 		if (!sec_count)
@@ -111,6 +113,10 @@ void EXTI0_1_IRQHandler(void)
 		{
 			kbd_up = ST_PRESS;
 		}
+		if (READ_UP()) // release_Up
+		{
+			kbd_up = ST_OFF;
+		}
 		EXTI->PR |= EXTI_PR_PIF0;
 	}
 	if (EXTI->PR & EXTI_PR_PIF1)
@@ -118,6 +124,10 @@ void EXTI0_1_IRQHandler(void)
 		if (!READ_DOWN()) // press Down PF0
 		{
 			kbd_down = ST_PRESS;
+		}
+		if (READ_DOWN()) // press Down PF0
+		{
+			kbd_down = ST_OFF;
 		}
 		EXTI->PR |= EXTI_PR_PIF1;
 	}
@@ -131,6 +141,10 @@ void EXTI2_3_IRQHandler(void)
 		{
 			kbd_right = ST_PRESS;
 		}
+		if (READ_RIGHT()) // press Right
+		{
+			kbd_right = ST_OFF;
+		}
 		EXTI->PR |= EXTI_PR_PIF2;
 	}
 }
@@ -141,6 +155,10 @@ void EXTI4_15_IRQHandler(void)
 		if (!READ_LEFT()) // press Left PA0
 		{
 			kbd_left = ST_PRESS;
+		}
+		if (READ_LEFT()) // press Left PA0
+		{
+			kbd_left = ST_OFF;
 		}
 		EXTI->PR |= EXTI_PR_PIF9;
 	}
@@ -177,6 +195,7 @@ void go_cut(void) // 1 rotation = 32mm = 200steps
 	fillRect(1, 1, 99, 78, RED);
 	LCD_Print("Amount", 5, 20, WHITE, RED, 1, 1, 0);
 	LCD_Print("Ready", 5, 60, WHITE, RED, 1, 1, 0);
+	LCD_Print("For stop press Up", 0, 40, YELLOW, RED, 1, 1, 0);
 	if (wire == 0 || wire_qnt == 0)
 		return;
 	DRV_ON;
@@ -184,6 +203,18 @@ void go_cut(void) // 1 rotation = 32mm = 200steps
 
 	for (qq = wire_qnt; qq > 0; qq--)
 	{
+		if (kbd_up == ST_PRESS)
+		{
+			kbd_up = ST_OFF;
+			DRV_OFF;
+			TIM1->CCR3 = KNIFE_OPEN;
+			fillRect(1, 1, 99, 78, GREEN);
+			LCD_Print("Stopped!", 3, 28, RED, GREEN, 2, 2, 0);
+			delay_ms(1000);
+			fillRect(1, 1, 99, 78, BLACK);
+			return;
+		}
+
 		TIM1->CCR3 = KNIFE_OPEN;
 		delay_ms(KNIFE_TIME);
 
@@ -305,8 +336,8 @@ void initial(void)
 	GPIOA->AFR[1] |= (2 << (2 * 4));	  // TIM1_CH3
 
 	RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
-	TIM1->PSC = 400 - 1; // TIM1->PSC = 400 - 1;
-	TIM1->ARR = 100;
+	TIM1->PSC = 200 - 1; // TIM1->PSC = 400 - 1;
+	TIM1->ARR = 200;
 	TIM1->CCR3 = KNIFE_OPEN;
 	TIM1->CCMR2 |= TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3M_1; // PWM
 	TIM1->CCER |= TIM_CCER_CC3E;
@@ -341,6 +372,7 @@ void initial(void)
 	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PF | SYSCFG_EXTICR1_EXTI1_PF;
 
 	EXTI->FTSR |= EXTI_FTSR_TR2 | EXTI_FTSR_TR9 | EXTI_FTSR_TR0 | EXTI_FTSR_TR1; // Falling
+	EXTI->RTSR |= EXTI_RTSR_TR2 | EXTI_RTSR_TR9 | EXTI_RTSR_TR0 | EXTI_RTSR_TR1; // Rising
 	NVIC_SetPriority(EXTI0_1_IRQn, 5);
 	NVIC_EnableIRQ(EXTI0_1_IRQn);
 	NVIC_SetPriority(EXTI2_3_IRQn, 5);
@@ -466,25 +498,31 @@ void kbd_scan(void) // keyboard_scan
 	if (kbd_down == ST_PRESS && press_time > FILTR_TIME) // Down
 	{
 		lcd_flag = 1;
-		press_time = 0;
+		// press_time = 0;
 		switch (pos)
 		{
 		case 0:
 		{
-			if (wire_pre > 0)
+			if ((wire_pre > 0 && press_time < SPEED_TIME) || (wire_pre < 10 && wire_pre > 0 && press_time >= SPEED_TIME))
 				wire_pre--;
+			if (wire_pre > 10 && press_time >= SPEED_TIME)
+				wire_pre -= 10;
 		}
 		break;
 		case 1:
 		{
-			if (wire > 0)
+			if ((wire > 0 && press_time < SPEED_TIME) || (wire < 10 && press_time >= SPEED_TIME))
 				wire--;
+			if (wire > 10 && press_time >= SPEED_TIME)
+				wire -= 10;
 		}
 		break;
 		case 2:
 		{
-			if (wire_post > 0)
+			if ((wire_post > 0 && press_time < SPEED_TIME) || (wire_post < 10 && wire_post > 0 && press_time >= SPEED_TIME))
 				wire_post--;
+			if (wire_post > 10 && press_time >= SPEED_TIME)
+				wire_post -= 10;
 		}
 		break;
 		case 3:
@@ -495,8 +533,10 @@ void kbd_scan(void) // keyboard_scan
 		break;
 		case 4:
 		{
-			if (wire_qnt > 0)
+			if ((wire_qnt > 0 && press_time < SPEED_TIME) || (wire_qnt < 10 && wire_qnt > 0 && press_time >= SPEED_TIME))
 				wire_qnt--;
+			if (wire_qnt > 10 && press_time >= SPEED_TIME)
+				wire_qnt -= 10;
 		}
 		break;
 		case 5:
@@ -516,25 +556,31 @@ void kbd_scan(void) // keyboard_scan
 	if (kbd_up == ST_PRESS && press_time > FILTR_TIME) // Up
 	{
 		lcd_flag = 1;
-		press_time = 0;
+		// press_time = 0;
 		switch (pos)
 		{
 		case 0:
 		{
-			if (wire_pre < 999)
+			if ((wire_pre < 999 && press_time < SPEED_TIME) || (wire_pre > 990 && wire_pre < 999 && press_time >= SPEED_TIME))
 				wire_pre++;
+			if (wire_pre < 990 && press_time >= SPEED_TIME)
+				wire_pre += 10;
 		}
 		break;
 		case 1:
 		{
-			if (wire < 999)
+			if ((wire < 999 && press_time < SPEED_TIME) || (wire > 990 && wire < 999 && press_time >= SPEED_TIME))
 				wire++;
+			if (wire < 990 && press_time >= SPEED_TIME)
+				wire += 10;
 		}
 		break;
 		case 2:
 		{
-			if (wire_post < 999)
+			if ((wire_post < 999 && press_time < SPEED_TIME) || (wire_post > 990 && wire_post < 999 && press_time >= SPEED_TIME))
 				wire_post++;
+			if (wire_post < 990 && press_time >= SPEED_TIME)
+				wire_post += 10;
 		}
 		break;
 		case 3:
@@ -545,8 +591,10 @@ void kbd_scan(void) // keyboard_scan
 		break;
 		case 4:
 		{
-			if (wire_qnt < 999)
+			if ((wire_qnt < 999 && press_time < SPEED_TIME) || (wire_qnt > 990 && wire_qnt < 999 && press_time >= SPEED_TIME))
 				wire_qnt++;
+			if (wire_qnt < 990 && press_time >= SPEED_TIME)
+				wire_qnt += 10;
 		}
 		break;
 		case 5:
